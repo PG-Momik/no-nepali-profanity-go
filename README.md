@@ -76,7 +76,9 @@ f.FindProfanity("fuck muji murkha")   // [muji]
 
 - `Languages`: any of `English`, `Romanized`, `Devanagari`. `nil` checks all three; an empty slice checks none.
 - `Strictness`: `Lenient` (severe words only), `Standard` (the default; adds milder insults like `idiot`, `murkha`)
-  or `Strict` (adds the stems `rand`, `cond`, `kand`, `lund`, which also hit words like `Randip` and `conditions`).
+  or `Strict` (adds entries that are also ordinary words, like `damn`, and the stems `rand`, `cond`, `kand`, `lund`;
+  names they would hit, like `Randip`, are on a built-in allow list).
+- `ExtraWords`: more words to flag. `AllowWords`: words never to flag, such as names on your site.
 
 `NewFilter` returns an error for an unknown language or strictness; `MustNewFilter` panics instead.
 

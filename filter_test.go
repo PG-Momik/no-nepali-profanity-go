@@ -49,6 +49,23 @@ func TestCatches(t *testing.T) {
 		{"Latin phrase", "khatako choro"},
 		{"Devanagari phrase", "राण्डीको बान"},
 		{"spelling variant with -ey", "yo khatey payment app kahiley chaley po"},
+		{"an English slur", "what a faggot"},
+		{"a short English slur", "fag"},
+		{"an English slur in leetspeak", "f@ggot"},
+		{"an English compound with a stem", "shitface"},
+		{"an English compound in leetspeak with !", "sh!tf@ce"},
+		{"a root inside a longer word", "dumbfuck"},
+		{"a root inside a joined phrase", "sonofabitch"},
+		{"x written for chh", "xakka"},
+		{"x written for chh, stretched", "xaaakka"},
+		{"x written for ch", "maxikne"},
+		{"a word split by punctuation", "sh.it happens"},
+		{"a word split by a hyphen", "fu-ck off"},
+		{"a word split with one letter on its own", "f-ck off"},
+		{"accented letters", "fück"},
+		{"a Cyrillic look-alike letter", "fuсk"},
+		{"9 for g", "ni99er"},
+		{"8 for b", "8itch"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -104,6 +121,35 @@ func TestDoesNotFlag(t *testing.T) {
 		"lato keta",
 		"फोहोर पानी",
 		"लाटो केटा",
+		// chh (छ) is kept apart from ch (च)
+		"chhodnu parchha",
+		"xodnu parchha",
+		"chhut paunu bhayo",
+		// Words and names on the allow list, or that only contain a listed word
+		"Shital Shrestha",
+		"Shitijko ghar",
+		"Nigeria and Niger",
+		"he sniggered",
+		"Scunthorpe United",
+		"Harshita and Nishita",
+		"shiitake mushrooms",
+		"a niggardly tip",
+		"Shiite and Sunni",
+		"a cutwater and sweetwater",
+		"the dog's muzzle",
+		"sticky goo",
+		"a looser fit",
+		"fagotto solo",
+		// Punctuation that isn't hiding a word
+		"e.g. the i.e. case",
+		"shital.shrestha@example.com",
+		"self-conscious and well-known",
+		"don't go",
+		// Ordinary words the Romanized spelling folds must not change
+		"the sale is on",
+		"good food",
+		"book a shoot",
+		"the 2026 census",
 		"",
 	}
 	for _, text := range texts {
@@ -166,10 +212,18 @@ func TestStrictness(t *testing.T) {
 	}
 
 	strict := MustNewFilter(FilterOptions{Strictness: Strict})
+	if ContainsProfanity("damn it") {
+		t.Error("Standard caught the Strict word damn")
+	}
+	// Strict adds the stems and words that also match ordinary words, but leaves the allow list alone.
 	for text, want := range map[string][]string{
 		"randikoban":           {"randikoban"},
-		"terms and conditions": {"conditions"},
-		"Randip Thapa":         {"randip"},
+		"damn it":              {"damn"},
+		"Randip Thapa":         {},
+		"Randipko class":       {},
+		"terms and conditions": {},
+		"a random conductor":   {},
+		"Kandel sir":           {},
 	} {
 		if got := strict.FindProfanity(text); !reflect.DeepEqual(got, want) {
 			t.Errorf("strict FindProfanity(%q) = %q, want %q", text, got, want)
@@ -178,6 +232,37 @@ func TestStrictness(t *testing.T) {
 
 	if _, err := NewFilter(FilterOptions{Strictness: "max"}); err == nil {
 		t.Error("NewFilter accepted an unknown strictness")
+	}
+}
+
+func TestExtraAndAllowWords(t *testing.T) {
+	extra := MustNewFilter(FilterOptions{ExtraWords: []string{"spammer", "ठग"}})
+	for text, want := range map[string][]string{
+		"sp4mmer":        {"spammer"},
+		"spammerko kura": {"spammerko"},
+		"ठगको":           {"ठगको"},
+	} {
+		if got := extra.FindProfanity(text); !reflect.DeepEqual(got, want) {
+			t.Errorf("extra FindProfanity(%q) = %q, want %q", text, got, want)
+		}
+	}
+	if got := FindProfanity("spammer ठग"); len(got) != 0 {
+		t.Errorf("default FindProfanity caught extra words: %q", got)
+	}
+
+	for _, c := range []struct {
+		allow []string
+		text  string
+		want  []string
+	}{
+		{[]string{"idiot"}, "idiot", []string{}},
+		{[]string{"muji"}, "mujiko", []string{}},
+		{[]string{"मुजी"}, "मुजीको", []string{}},
+		{[]string{"idiot"}, "idiot muji", []string{"muji"}},
+	} {
+		if got := MustNewFilter(FilterOptions{AllowWords: c.allow}).FindProfanity(c.text); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("allow %q FindProfanity(%q) = %q, want %q", c.allow, c.text, got, c.want)
+		}
 	}
 }
 
@@ -235,6 +320,8 @@ func TestCensor(t *testing.T) {
 		"f*ck and *sh*t*":    "**** and ******",
 		"muji muji":          "**** ****",
 		"you 😀 muji 😀":       "you 😀 **** 😀",
+		"sh.it happens":      "***** happens",
+		"sh!tf@ce":           "********",
 		// Devanagari is masked by visible character, and a conjunct is one character.
 		"मुजीको कक्षा": "*** कक्षा",
 		"गाण्ड":        "**",
@@ -273,7 +360,7 @@ func TestCensorOptions(t *testing.T) {
 	if got := MustNewFilter(FilterOptions{Strictness: Lenient}).Censor("you idiot"); got != "you idiot" {
 		t.Errorf("lenient: %q", got)
 	}
-	if got := MustNewFilter(FilterOptions{Strictness: Strict}).Censor("Randip Thapa"); got != "****** Thapa" {
+	if got := MustNewFilter(FilterOptions{Strictness: Strict}).Censor("damn Randip"); got != "**** Randip" {
 		t.Errorf("strict: %q", got)
 	}
 }

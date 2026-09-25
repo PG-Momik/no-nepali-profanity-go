@@ -15,7 +15,16 @@ var allLanguages = []Language{English, Romanized, Devanagari}
 
 var strictnessLevel = map[Strictness]int{Lenient: 0, Standard: 1, Strict: 2}
 
-var leet = map[rune]rune{'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's'}
+var leet = map[rune]rune{
+	'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '8': 'b', '9': 'g', '@': 'a', '$': 's', '€': 'e',
+}
+
+// Cyrillic and Greek letters that look like Latin ones, so "fuсk" with a Cyrillic с still reads as "fuck".
+var confusables = map[rune]rune{
+	'а': 'a', 'в': 'b', 'е': 'e', 'ё': 'e', 'к': 'k', 'м': 'm', 'н': 'h', 'о': 'o', 'р': 'p', 'с': 'c', 'т': 't',
+	'у': 'y', 'х': 'x', 'ѕ': 's', 'і': 'i', 'ї': 'i', 'ј': 'j', 'ԁ': 'd', 'α': 'a', 'β': 'b', 'ε': 'e', 'ι': 'i',
+	'κ': 'k', 'ν': 'v', 'ο': 'o', 'ρ': 'p', 'τ': 't', 'υ': 'u', 'χ': 'x',
+}
 
 // Words shorter than this after collapsing repeated letters must match exactly, so "as" never matches "ass".
 const minCollapse = 4
@@ -52,6 +61,11 @@ func collapse(s string) string { return shortenRuns(s, 1, 2) }
 // squeeze turns every run of three or more of a letter into two: "fuuuuck" → "fuuck", but "mooji" stays.
 func squeeze(s string) string { return shortenRuns(s, 2, 3) }
 
+// romanize folds the spellings of छ, chh and x, into x. Romanized entries and tokens are both folded before they're
+// compared, so xakka matches chhakka. It also keeps छ apart from च once letters are collapsed, so chhod ("leave") no
+// longer matches the stem chod.
+func romanize(s string) string { return strings.ReplaceAll(squeeze(s), "chh", "x") }
+
 // shortenRuns cuts each run of one rune that is at least minRun long down to keep runes.
 func shortenRuns(s string, keep, minRun int) string {
 	var b strings.Builder
@@ -85,16 +99,23 @@ func normalizeRune(r rune) string {
 	}
 	var b strings.Builder
 	for _, c := range norm.NFKC.String(string(r)) {
+		lower := string(unicode.ToLower(c))
 		if c == 'İ' {
-			// Lower-case it the way JavaScript and Python do, keeping the dot as a combining mark.
-			b.WriteString("i̇")
-			continue
+			// Lower-case it the way JavaScript and Python do: an i and a combining dot, which is removed below.
+			lower = "i"
 		}
-		c = unicode.ToLower(c)
-		if l, ok := leet[c]; ok {
-			c = l
+		// Accents are removed, so "fück" reads as "fuck".
+		for _, d := range norm.NFD.String(lower) {
+			if unicode.In(d, unicode.Mn, unicode.Mc, unicode.Me) {
+				continue
+			}
+			if l, ok := leet[d]; ok {
+				d = l
+			} else if l, ok := confusables[d]; ok {
+				d = l
+			}
+			b.WriteRune(d)
 		}
-		b.WriteRune(c)
 	}
 	return b.String()
 }
@@ -165,11 +186,21 @@ func normalizeText(s string) string { return normalize(s).text }
 type tables struct {
 	latinExact     map[string]bool
 	latinCollapsed map[string]bool
-	latinWords     [][]rune
 	latinStems     []string
-	devWords       map[string]bool
-	devStems       []string
-	phrases        [][]string
+	romanExact     map[string]bool
+	romanCollapsed map[string]bool
+	romanStems     []string
+	// Every Latin word and stem, unfolded, for wildcard tokens.
+	wildWords [][]rune
+	wildStems []string
+	infixes   []string
+	// The infixes with no doubled letter, which are also looked for in the collapsed token.
+	plainInfixes []string
+	allowed      map[string]bool
+	devWords     map[string]bool
+	devStems     []string
+	devAllowed   map[string]bool
+	phrases      [][]string
 }
 
 func buildTables(options FilterOptions) (*tables, error) {
@@ -194,37 +225,98 @@ func buildTables(options FilterOptions) (*tables, error) {
 		return nil, fmt.Errorf("nepaliprofanity: unknown strictness %q, use one of: lenient, standard, strict", strictness)
 	}
 
-	active := func(entries []LexiconEntry, devanagari bool) []string {
+	active := func(entries []LexiconEntry, language Language) []string {
 		var out []string
+		if !languages[language] {
+			return out
+		}
 		for _, e := range entries {
-			if languages[e.Language] && strictnessLevel[e.Strictness] <= level && (e.Language == Devanagari) == devanagari {
+			if e.Language == language && strictnessLevel[e.Strictness] <= level {
 				out = append(out, normalizeText(e.Text))
 			}
 		}
 		return out
 	}
+	normalizeList := func(words []string) []string {
+		var out []string
+		for _, w := range words {
+			if w = strings.TrimSpace(w); w != "" {
+				out = append(out, normalizeText(w))
+			}
+		}
+		return out
+	}
+	extraWords := normalizeList(options.ExtraWords)
+	allowWords := normalizeList(append(append([]string{}, Allowed...), options.AllowWords...))
 
 	t := &tables{
 		latinExact:     map[string]bool{},
 		latinCollapsed: map[string]bool{},
+		romanExact:     map[string]bool{},
+		romanCollapsed: map[string]bool{},
+		allowed:        map[string]bool{},
 		devWords:       map[string]bool{},
+		devAllowed:     map[string]bool{},
 	}
-	for _, w := range active(Words, false) {
+
+	// Extra words count as English: matched as they are, without the Romanized spelling folds.
+	englishWords := active(Words, English)
+	for _, w := range extraWords {
+		if isDevanagari(w) {
+			t.devWords[w] = true
+		} else {
+			englishWords = append(englishWords, w)
+		}
+	}
+	for _, w := range englishWords {
 		t.latinExact[squeeze(w)] = true
-		t.latinWords = append(t.latinWords, []rune(squeeze(w)))
 		if c := collapse(w); runeLen(c) >= minCollapse {
 			t.latinCollapsed[c] = true
 		}
 	}
-	for _, s := range active(Stems, false) {
+	romanWords := active(Words, Romanized)
+	for _, w := range romanWords {
+		r := romanize(w)
+		t.romanExact[r] = true
+		if c := collapse(r); runeLen(c) >= minCollapse {
+			t.romanCollapsed[c] = true
+		}
+	}
+	for _, w := range append(append([]string{}, englishWords...), romanWords...) {
+		t.wildWords = append(t.wildWords, []rune(squeeze(w)))
+	}
+	englishStems, romanStems := active(Stems, English), active(Stems, Romanized)
+	for _, s := range englishStems {
 		t.latinStems = append(t.latinStems, collapse(s))
 	}
-	for _, w := range active(Words, true) {
+	for _, s := range romanStems {
+		t.romanStems = append(t.romanStems, collapse(romanize(s)))
+	}
+	for _, s := range append(append([]string{}, englishStems...), romanStems...) {
+		t.wildStems = append(t.wildStems, collapse(s))
+	}
+	for _, i := range active(Infixes, English) {
+		i = squeeze(i)
+		t.infixes = append(t.infixes, i)
+		if collapse(i) == i {
+			t.plainInfixes = append(t.plainInfixes, i)
+		}
+	}
+	for _, w := range allowWords {
+		if isDevanagari(w) {
+			t.devAllowed[w] = true
+		} else {
+			t.allowed[squeeze(w)] = true
+		}
+	}
+	for _, w := range active(Words, Devanagari) {
 		t.devWords[w] = true
 	}
-	t.devStems = active(Stems, true)
-	for _, p := range append(active(Phrases, false), active(Phrases, true)...) {
-		t.phrases = append(t.phrases, strings.Fields(p))
+	t.devStems = active(Stems, Devanagari)
+	for _, l := range allLanguages {
+		for _, p := range active(Phrases, l) {
+			t.phrases = append(t.phrases, strings.Fields(p))
+		}
 	}
 	return t, nil
 }
@@ -261,12 +353,12 @@ func (t *tables) wildcardTokenMatches(token string) bool {
 	for _, tok := range tokens {
 		for _, f := range []string{squeeze(tok), collapse(tok)} {
 			form := []rune(f)
-			for _, w := range t.latinWords {
+			for _, w := range t.wildWords {
 				if wildcardEqual(form, w) {
 					return true
 				}
 			}
-			for _, stem := range t.latinStems {
+			for _, stem := range t.wildStems {
 				s := []rune(stem)
 				if len(form) >= len(s) && wildcardEqual(form[:len(s)], s) {
 					return true
@@ -286,12 +378,35 @@ func (t *tables) latinTokenMatches(token string) bool {
 		}
 	}
 	for _, c := range candidates {
-		collapsed := collapse(c)
-		if t.latinExact[squeeze(c)] || (runeLen(collapsed) >= minCollapse && t.latinCollapsed[collapsed]) {
+		if t.allowed[squeeze(c)] {
+			return false
+		}
+	}
+	for _, c := range candidates {
+		squeezed, collapsed := squeeze(c), collapse(c)
+		roman := romanize(c)
+		romanCollapsed := collapse(roman)
+		if t.latinExact[squeezed] || (runeLen(collapsed) >= minCollapse && t.latinCollapsed[collapsed]) ||
+			t.romanExact[roman] || (runeLen(romanCollapsed) >= minCollapse && t.romanCollapsed[romanCollapsed]) {
 			return true
 		}
 		for _, stem := range t.latinStems {
 			if strings.HasPrefix(collapsed, stem) {
+				return true
+			}
+		}
+		for _, stem := range t.romanStems {
+			if strings.HasPrefix(romanCollapsed, stem) {
+				return true
+			}
+		}
+		for _, i := range t.infixes {
+			if strings.Contains(squeezed, i) {
+				return true
+			}
+		}
+		for _, i := range t.plainInfixes {
+			if strings.Contains(collapsed, i) {
 				return true
 			}
 		}
@@ -308,6 +423,11 @@ func (t *tables) devanagariTokenMatches(token string) bool {
 		if strings.HasSuffix(token, s) && runeLen(token) > runeLen(s)+1 {
 			candidates = append(candidates, strings.TrimSuffix(token, s))
 			break
+		}
+	}
+	for _, c := range candidates {
+		if t.devAllowed[c] {
+			return false
 		}
 	}
 	for _, c := range candidates {
@@ -376,6 +496,73 @@ func tokenSpans(n normalized) []span {
 	}
 	flush()
 	return tokens
+}
+
+// isGlue reports whether s is made only of characters that can split a word without a space: "sh.it", "fu-ck".
+func isGlue(s string) bool {
+	return s != "" && strings.Trim(s, "._-~'`") == ""
+}
+
+const (
+	maxGluedPieces = 6
+	maxGluedLength = 12
+)
+
+// gluedSpans returns runs of Latin letters split only by glue characters, read as one word. A run is joined only if
+// one of its pieces is three letters or fewer and the joined word is at most 12 letters, so "shital.shrestha" in an
+// email address stays two words.
+func gluedSpans(n normalized) []span {
+	type run struct {
+		value    string
+		from, to int
+	}
+	var runs []run
+	text := n.text
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if !isTokenRune(r) {
+			i += size
+			continue
+		}
+		j := i
+		for j < len(text) {
+			r, size := utf8.DecodeRuneInString(text[j:])
+			if !isTokenRune(r) {
+				break
+			}
+			j += size
+		}
+		if !isDevanagari(text[i:j]) {
+			runs = append(runs, run{text[i:j], i, j})
+		}
+		i = j
+	}
+
+	var spans []span
+	var group []run
+	flush := func() {
+		length, short := 0, false
+		for _, r := range group {
+			length += runeLen(r.value)
+			short = short || runeLen(r.value) <= 3
+		}
+		if len(group) >= 2 && len(group) <= maxGluedPieces && length <= maxGluedLength && short {
+			var b strings.Builder
+			for _, r := range group {
+				b.WriteString(r.value)
+			}
+			spans = append(spans, span{b.String(), n.starts[group[0].from], n.ends[group[len(group)-1].to-1]})
+		}
+		group = nil
+	}
+	for _, r := range runs {
+		if len(group) > 0 && !isGlue(text[group[len(group)-1].to:r.from]) {
+			flush()
+		}
+		group = append(group, r)
+	}
+	flush()
+	return spans
 }
 
 // phraseSpans finds each non-overlapping occurrence of a phrase in the normalized text, as byte ranges. A phrase
@@ -452,6 +639,19 @@ func (t *tables) scan(text string) []ProfanityMatch {
 		}
 		if hit {
 			found = append(found, match(tok.value, tok.start, tok.end))
+		}
+	}
+
+	// A glued word is only read joined when none of its pieces matched on its own.
+glued:
+	for _, g := range gluedSpans(n) {
+		for _, m := range found {
+			if m.Start < g.end && g.start < m.End {
+				continue glued
+			}
+		}
+		if t.latinTokenMatches(g.value) {
+			found = append(found, match(g.value, g.start, g.end))
 		}
 	}
 	for _, words := range t.phrases {

@@ -12,7 +12,8 @@ const (
 // Strictness sets how much the filter catches.
 //   - Lenient: severe profanity only.
 //   - Standard: adds milder insults (idiot, murkha, sala…). The default.
-//   - Strict: adds stems that also start ordinary words or names (rand → Randip, cond → condition).
+//   - Strict: adds words and stems that are also ordinary words (damn, cum, rand → Rand). Known names and words,
+//     like Randip and condition, stay allowed.
 type Strictness string
 
 const (
@@ -27,6 +28,12 @@ type FilterOptions struct {
 	Languages []Language
 	// Strictness sets how much to catch. Empty means Standard.
 	Strictness Strictness
+	// ExtraWords are more words to flag, at every strictness. They're matched like the built-in words: leetspeak,
+	// stretching, postpositions.
+	ExtraWords []string
+	// AllowWords are words never to flag, such as names on your site. A word here is also allowed with a
+	// postposition.
+	AllowWords []string
 }
 
 // ProfanityMatch is one place where profanity was found in the original text.
