@@ -9,14 +9,16 @@ The full guide, including the rules for adding a word, is at
 
 ## Reporting a problem
 
-All the ports share one issue tracker:
-[github.com/PG-Momik/no-nepali-profanity/issues](https://github.com/PG-Momik/no-nepali-profanity/issues). Include:
+Open an issue in this repository:
+[github.com/PG-Momik/no-nepali-profanity-go/issues](https://github.com/PG-Momik/no-nepali-profanity-go/issues). Include:
 
 - the **exact input text**,
 - which words were found, and what you expected,
 - that you used the Go package, and the options you passed, if any.
 
-For a false positive, say whether the word is a name, a place or an ordinary word.
+For a false positive, say whether the word is a name, a place or an ordinary word. To suggest a word for every
+package, open the issue in the [JavaScript repository](https://github.com/PG-Momik/no-nepali-profanity/issues), where
+the word lists are maintained.
 
 ## Development setup
 
