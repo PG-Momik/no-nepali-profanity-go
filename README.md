@@ -1,7 +1,7 @@
 # no-nepali-profanity-go
 
 A small profanity matcher for **English**, **Romanized (Latin) Nepali** and **Devanagari Nepali**, plus the Hindi
-slang common in Nepal. Built for moderating user-written text — names, comments, reviews — on Nepali sites, where
+slang common in Nepal. Built for moderating user-written text (names, comments, reviews) on Nepali sites, where
 false positives on real names are more damaging than a missed swear.
 
 The Go port of [no-nepali-profanity](https://github.com/PG-Momik/no-nepali-profanity). It uses the same word lists
